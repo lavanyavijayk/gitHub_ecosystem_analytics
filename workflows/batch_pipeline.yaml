@@ -1,0 +1,374 @@
+# ================================================================
+# batch_pipeline.yaml
+#
+# Triggered by Cloud Scheduler daily at 03:00 UTC.
+# Pulls all pending file upload messages from Pub/Sub.
+# If the queue is empty  → returns immediately (no cluster created).
+# If N files are queued  → creates ONE cluster, processes all N files
+#                          (silver per file, then api, gold + BQ write,
+#                          ml_score once), acks messages, deletes cluster.
+#
+# ml_score gracefully skips if no trained model exists yet.
+#
+# Terraform injects: project_id, region, prefix, scripts_bucket,
+#                    dataproc_sa, bq_dataset, pubsub_subscription
+# Cloud Workflows expressions use $${...} to avoid Terraform interpolation.
+# ================================================================
+
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - project_id:          "${project_id}"
+          - region:              "${region}"
+          - prefix:              "${prefix}"
+          - scripts_bucket:      "${scripts_bucket}"
+          - dataproc_sa:         "${dataproc_sa}"
+          - bq_dataset:          "${bq_dataset}"
+          - pubsub_subscription: "${pubsub_subscription}"
+          - max_messages:        50
+          - pipeline_error:      null
+
+    # ── Pull pending messages from Pub/Sub ────────────────────
+    - pull_messages:
+        call: http.post
+        args:
+          url: $${"https://pubsub.googleapis.com/v1/" + pubsub_subscription + ":pull"}
+          auth:
+            type: OAuth2
+          body:
+            maxMessages: $${max_messages}
+        result: pull_response
+
+    - init_lists:
+        assign:
+          - received: $${default(map.get(pull_response.body, "receivedMessages"), [])}
+          - file_paths: []
+          - ack_ids: []
+
+    # ── Exit early if nothing to process (no cluster created) ─
+    - check_empty:
+        switch:
+          - condition: $${len(received) == 0}
+            next: nothing_to_do
+        next: build_lists
+
+    # ── Extract file paths and ack IDs from messages ──────────
+    - build_lists:
+        for:
+          value: msg
+          in: $${received}
+          steps:
+            - append_to_lists:
+                assign:
+                  - file_paths: $${list.concat(file_paths, ["gs://" + msg.message.attributes.bucketId + "/" + msg.message.attributes.objectId])}
+                  - ack_ids:    $${list.concat(ack_ids,    [msg.ackId])}
+
+    # ── Ack messages before cluster creation ─────────────────
+    # (avoids ack deadline expiry during long pipeline runs)
+    - ack_messages:
+        call: http.post
+        args:
+          url: $${"https://pubsub.googleapis.com/v1/" + pubsub_subscription + ":acknowledge"}
+          auth:
+            type: OAuth2
+          body:
+            ackIds: $${ack_ids}
+
+    - set_cluster_name:
+        assign:
+          - cluster_name: $${prefix + "-batch-" + string(int(sys.now()))}
+
+    # ── Run pipeline on one cluster ───────────────────────────
+    - run_pipeline:
+        try:
+          steps:
+            - create_cluster:
+                call: create_dataproc_cluster
+                args:
+                  project_id:     $${project_id}
+                  region:         $${region}
+                  cluster_name:   $${cluster_name}
+                  scripts_bucket: $${scripts_bucket}
+                  dataproc_sa:    $${dataproc_sa}
+
+            # silver_layer.py — process files with concurrency limit of 2
+            # (matches the 2-worker cluster to avoid memory pressure)
+            - process_files:
+                parallel:
+                  shared: [project_id, region, cluster_name, scripts_bucket, prefix]
+                  concurrency_limit: 2
+                  for:
+                    value: file_path
+                    in: $${file_paths}
+                    steps:
+                      - run_silver:
+                          call: submit_pyspark_job
+                          args:
+                            project_id:     $${project_id}
+                            region:         $${region}
+                            cluster_name:   $${cluster_name}
+                            scripts_bucket: $${scripts_bucket}
+                            script:         silver_layer.py
+                            job_args:
+                              - "--triggered_file"
+                              - $${file_path}
+                              - "--run_mode"
+                              - incremental
+                              - "--prefix"
+                              - $${prefix}
+                              - "--project_id"
+                              - $${project_id}
+                          result: silver_result
+
+            # enrich top repos via GitHub API (builds repositories + contributors silver tables)
+            - run_api:
+                call: submit_pyspark_job
+                args:
+                  project_id:     $${project_id}
+                  region:         $${region}
+                  cluster_name:   $${cluster_name}
+                  scripts_bucket: $${scripts_bucket}
+                  script:         github_api_ingestion.py
+                  job_args:
+                    - "--run_mode"
+                    - incremental
+                    - "--prefix"
+                    - $${prefix}
+                    - "--project_id"
+                    - $${project_id}
+                    - "--top_n"
+                    - "2000"
+                result: api_result
+
+            # gold and ml_score run once after all silver jobs complete
+            - run_gold:
+                call: submit_pyspark_job
+                args:
+                  project_id:     $${project_id}
+                  region:         $${region}
+                  cluster_name:   $${cluster_name}
+                  scripts_bucket: $${scripts_bucket}
+                  script:         gold_layer.py
+                  job_args:
+                    - "--run_mode"
+                    - incremental
+                    - "--prefix"
+                    - $${prefix}
+                    - "--project_id"
+                    - $${project_id}
+                    - "--bq_dataset"
+                    - $${bq_dataset}
+                result: gold_result
+
+            - run_ml_score:
+                call: submit_pyspark_job
+                args:
+                  project_id:     $${project_id}
+                  region:         $${region}
+                  cluster_name:   $${cluster_name}
+                  scripts_bucket: $${scripts_bucket}
+                  script:         ml_score.py
+                  job_args:
+                    - "--prefix"
+                    - $${prefix}
+                    - "--project_id"
+                    - $${project_id}
+                    - "--bq_dataset"
+                    - $${bq_dataset}
+                result: score_result
+
+        except:
+          as: e
+          steps:
+            - capture_error:
+                assign:
+                  - pipeline_error: $${e}
+
+    - cleanup_cluster:
+        call: delete_dataproc_cluster
+        args:
+          project_id:   $${project_id}
+          region:       $${region}
+          cluster_name: $${cluster_name}
+
+    - check_error:
+        switch:
+          - condition: $${pipeline_error != null}
+            raise: $${pipeline_error}
+        next: done
+
+    - done:
+        return:
+          status:      complete
+          files_processed: $${len(file_paths)}
+
+    - nothing_to_do:
+        return:
+          status: skipped
+          reason: no messages in queue
+
+
+# ── Subworkflow: Create Dataproc cluster ─────────────────────
+create_dataproc_cluster:
+  params: [project_id, region, cluster_name, scripts_bucket, dataproc_sa]
+  steps:
+    - init_poll_counter:
+        assign:
+          - cluster_poll_count: 0
+          - max_cluster_polls: 15
+
+    - create:
+        call: http.post
+        args:
+          url: $${"https://dataproc.googleapis.com/v1/projects/" + project_id + "/regions/" + region + "/clusters"}
+          auth:
+            type: OAuth2
+          body:
+            projectId:   $${project_id}
+            clusterName: $${cluster_name}
+            config:
+              masterConfig:
+                numInstances: 1
+                machineTypeUri: e2-standard-2
+                diskConfig:
+                  bootDiskSizeGb: 100
+              workerConfig:
+                numInstances: 2
+                machineTypeUri: e2-standard-2
+                diskConfig:
+                  bootDiskSizeGb: 100
+              softwareConfig:
+                imageVersion: 2.1-debian11
+                properties:
+                  spark:spark.sql.extensions: io.delta.sql.DeltaSparkSessionExtension
+                  spark:spark.sql.catalog.spark_catalog: org.apache.spark.sql.delta.catalog.DeltaCatalog
+              lifecycleConfig:
+                idleDeleteTtl: 1800s
+              gceClusterConfig:
+                zoneUri: us-central1-a
+                serviceAccount: $${dataproc_sa}
+                serviceAccountScopes:
+                  - https://www.googleapis.com/auth/cloud-platform
+              initializationActions:
+                - executableFile: $${"gs://" + scripts_bucket + "/init_cluster.sh"}
+                  executionTimeout: 600s
+        result: create_resp
+
+    - poll_cluster_running:
+        call: sys.sleep
+        args:
+          seconds: 60
+
+    - increment_cluster_poll:
+        assign:
+          - cluster_poll_count: $${cluster_poll_count + 1}
+
+    - check_cluster_timeout:
+        switch:
+          - condition: $${cluster_poll_count >= max_cluster_polls}
+            raise: $${"Cluster creation timed out after " + string(max_cluster_polls) + " minutes"}
+
+    - get_cluster_status:
+        call: http.get
+        args:
+          url: $${"https://dataproc.googleapis.com/v1/projects/" + project_id + "/regions/" + region + "/clusters/" + cluster_name}
+          auth:
+            type: OAuth2
+        result: cluster_resp
+
+    - check_cluster_state:
+        switch:
+          - condition: $${cluster_resp.body.status.state == "RUNNING"}
+            return: $${cluster_name}
+          - condition: $${cluster_resp.body.status.state == "ERROR"}
+            raise: $${"Cluster failed - " + default(map.get(cluster_resp.body.status, "detail"), "unknown error")}
+        next: poll_cluster_running
+
+
+# ── Subworkflow: Submit PySpark job and wait ─────────────────
+submit_pyspark_job:
+  params: [project_id, region, cluster_name, scripts_bucket, script, job_args]
+  steps:
+    - init_job_poll:
+        assign:
+          - job_poll_count: 0
+          - max_job_polls: 120
+
+    - submit:
+        call: http.post
+        args:
+          url: $${"https://dataproc.googleapis.com/v1/projects/" + project_id + "/regions/" + region + "/jobs:submit"}
+          auth:
+            type: OAuth2
+          body:
+            job:
+              placement:
+                clusterName: $${cluster_name}
+              pysparkJob:
+                mainPythonFileUri: $${"gs://" + scripts_bucket + "/" + script}
+                args: $${job_args}
+        result: job_resp
+
+    - capture_job_id:
+        assign:
+          - job_id: $${job_resp.body.reference.jobId}
+
+    - poll_job:
+        call: sys.sleep
+        args:
+          seconds: 30
+
+    - increment_job_poll:
+        assign:
+          - job_poll_count: $${job_poll_count + 1}
+
+    - check_job_timeout:
+        switch:
+          - condition: $${job_poll_count >= max_job_polls}
+            raise: $${"Job " + script + " timed out after " + string(max_job_polls * 30) + " seconds"}
+
+    - get_job_status:
+        call: http.get
+        args:
+          url: $${"https://dataproc.googleapis.com/v1/projects/" + project_id + "/regions/" + region + "/jobs/" + job_id}
+          auth:
+            type: OAuth2
+        result: job_status_resp
+
+    - check_job_state:
+        switch:
+          - condition: $${job_status_resp.body.status.state == "DONE"}
+            return: $${job_id}
+          - condition: $${job_status_resp.body.status.state == "ERROR"}
+            raise: $${"Job " + script + " failed - " + job_status_resp.body.status.details}
+          - condition: $${job_status_resp.body.status.state == "CANCELLED"}
+            raise: $${"Job " + script + " was cancelled"}
+        next: poll_job
+
+
+# ── Subworkflow: Delete cluster ───────────────────────────────
+delete_dataproc_cluster:
+  params: [project_id, region, cluster_name]
+  steps:
+    - delete:
+        try:
+          call: http.delete
+          args:
+            url: $${"https://dataproc.googleapis.com/v1/projects/" + project_id + "/regions/" + region + "/clusters/" + cluster_name}
+            auth:
+              type: OAuth2
+          result: delete_resp
+        except:
+          as: e
+          steps:
+            - handle_delete_error:
+                switch:
+                  - condition: $${e.code == 404}
+                    next: done
+                next: reraise
+            - reraise:
+                raise: $${e}
+    - done:
+        return: cluster_deleted

@@ -1,0 +1,10 @@
+# ================================================================
+# terraform.tfvars.example
+# Copy to terraform.tfvars and fill in your values.
+# ================================================================
+
+project_id = "your-gcp-project-id"
+region     = "us-central1"
+prefix     = "ghoss"
+github_pat = "ghp_xxxxxxxxxxxx"
+bq_dataset = "github_oss_gold"
