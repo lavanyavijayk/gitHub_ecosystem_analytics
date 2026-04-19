@@ -143,6 +143,8 @@ def write_delta(df, table: str, merge_key: str = "event_id",
     import time, random
     _write_start = time.time()
     path = f"{SILVER}/{table}"
+    # Enable schema auto-merge so new columns (e.g. repo_name, actor_login)
+    # are added automatically during MERGE without failing
     spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
 
     if run_mode == "incremental" and DeltaTable.isDeltaTable(spark, path):
@@ -376,57 +378,56 @@ release_df = (
 write_delta(release_df, "release_events")
 
 # ================================================================
-# DATA QUALITY AUDIT — only on full_refresh (too expensive per file)
+# DATA QUALITY AUDIT
 # ================================================================
-if run_mode == "full_refresh":
-    _step_start = _time.time()
-    _audit_rows = []
-    for _tbl, _etype in [
-        ("push_events",    "PushEvent"),
-        ("pr_events",      "PullRequestEvent"),
-        ("issues_events",  "IssuesEvent"),
-        ("watch_events",   "WatchEvent"),
-        ("fork_events",    "ForkEvent"),
-        ("create_events",  "CreateEvent"),
-        ("release_events", "ReleaseEvent"),
-    ]:
-        _path = f"{SILVER}/{_tbl}"
-        try:
-            _accepted = spark.read.format("delta").load(_path).count() \
-                if DeltaTable.isDeltaTable(spark, _path) else 0
-        except Exception:
-            _accepted = 0
-        _raw_count = raw_df.filter(F.col("type") == _etype).count()
-        _audit_rows.append((
-            _etype, int(_raw_count), int(_accepted),
-            run_mode, datetime.now(timezone.utc).isoformat(),
-        ))
+_step_start = _time.time()
+_audit_rows = []
+for _tbl, _etype in [
+    ("push_events",    "PushEvent"),
+    ("pr_events",      "PullRequestEvent"),
+    ("issues_events",  "IssuesEvent"),
+    ("watch_events",   "WatchEvent"),
+    ("fork_events",    "ForkEvent"),
+    ("create_events",  "CreateEvent"),
+    ("release_events", "ReleaseEvent"),
+]:
+    _path = f"{SILVER}/{_tbl}"
+    try:
+        _accepted = spark.read.format("delta").load(_path).count() \
+            if DeltaTable.isDeltaTable(spark, _path) else 0
+    except Exception:
+        _accepted = 0
+    _raw_count = raw_df.filter(F.col("type") == _etype).count()
+    _audit_rows.append((
+        _etype, int(_raw_count), int(_accepted),
+        run_mode, datetime.now(timezone.utc).isoformat(),
+    ))
 
-    _audit_schema = ["event_type", "raw_count", "accepted_count", "run_mode", "audited_at"]
-    _audit_df     = spark.createDataFrame(_audit_rows, _audit_schema)
-    _audit_path   = f"{SILVER}/dq_audit"
+_audit_schema = ["event_type", "raw_count", "accepted_count", "run_mode", "audited_at"]
+_audit_df     = spark.createDataFrame(_audit_rows, _audit_schema)
+_audit_path   = f"{SILVER}/dq_audit"
 
-    (_audit_df.write
-              .format("delta")
-              .mode("overwrite")
-              .option("overwriteSchema", "true")
-              .save(_audit_path))
-    print(f"[silver] DQ audit written ({_time.time() - _step_start:.0f}s):")
-    _audit_df.show(truncate=False)
+(_audit_df.write
+          .format("delta")
+          .mode("append" if DeltaTable.isDeltaTable(spark, _audit_path) else "overwrite")
+          .option("overwriteSchema", "true")
+          .save(_audit_path))
+print(f"[silver] DQ audit written ({_time.time() - _step_start:.0f}s):")
+_audit_df.show(truncate=False)
 
-    # ================================================================
-    # VACUUM — only on full_refresh (run manually or on schedule otherwise)
-    # ================================================================
-    _step_start = _time.time()
-    for tbl in ["push_events", "pr_events", "issues_events",
-                "watch_events", "fork_events", "create_events",
-                "release_events"]:
-        path = f"{SILVER}/{tbl}"
-        if DeltaTable.isDeltaTable(spark, path):
-            _vac_start = _time.time()
-            DeltaTable.forPath(spark, path).vacuum(retentionHours=168)
-            print(f"  [silver] VACUUM → {tbl} ({_time.time() - _vac_start:.0f}s)")
-    print(f"[silver] VACUUM total ({_time.time() - _step_start:.0f}s)")
+# ================================================================
+# VACUUM  (7-day retention — safe minimum for OSS Delta Lake)
+# ================================================================
+_step_start = _time.time()
+for tbl in ["push_events", "pr_events", "issues_events",
+            "watch_events", "fork_events", "create_events",
+            "release_events"]:
+    path = f"{SILVER}/{tbl}"
+    if DeltaTable.isDeltaTable(spark, path):
+        _vac_start = _time.time()
+        DeltaTable.forPath(spark, path).vacuum(retentionHours=168)
+        print(f"  [silver] VACUUM → {tbl} ({_time.time() - _vac_start:.0f}s)")
+print(f"[silver] VACUUM total ({_time.time() - _step_start:.0f}s)")
 
 print(f"[silver] silver layer complete — total pipeline time: "
       f"{_time.time() - _pipeline_start:.0f}s")

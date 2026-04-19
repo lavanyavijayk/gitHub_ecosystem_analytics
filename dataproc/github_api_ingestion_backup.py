@@ -55,18 +55,13 @@ print(f"[api_ingest] run_mode   = {run_mode}")
 print(f"[api_ingest] project_id = {project_id}")
 print(f"[api_ingest] top_pct    = {TOP_PCT}%")
 
-# ── GitHub PATs from Secret Manager (round-robin for throughput) ──
-sm_client = secretmanager.SecretManagerServiceClient()
-
-github_pats = []
-for secret_id in ("github-pat", "github-pat-2", "github-pat-3", "github-pat-4"):
-    secret_name = f"projects/{project_id}/secrets/{secret_id}/versions/latest"
-    pat = sm_client.access_secret_version(
-        request={"name": secret_name}
-    ).payload.data.decode("UTF-8")
-    github_pats.append(pat)
-
-print(f"[api_ingest] Loaded {len(github_pats)} GitHub PATs from Secret Manager")
+# ── GitHub PAT from Secret Manager ───────────────────────────
+sm_client  = secretmanager.SecretManagerServiceClient()
+secret_name = f"projects/{project_id}/secrets/github-pat/versions/latest"
+github_pat  = sm_client.access_secret_version(
+    request={"name": secret_name}
+).payload.data.decode("UTF-8")
+print("[api_ingest] GitHub PAT loaded from Secret Manager")
 
 # ================================================================
 # IDENTIFY TOP REPOS
@@ -138,66 +133,41 @@ else:
 # GITHUB REST API
 # ================================================================
 if to_fetch:
-    # ── Build one session per PAT for round-robin ────────────
-    sessions = []
-    for pat in github_pats:
-        s = requests.Session()
-        s.headers.update({
-            "Authorization":        f"token {pat}",
-            "Accept":               "application/vnd.github.v3+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        })
-        sessions.append(s)
+    session = requests.Session()
+    session.headers.update({
+        "Authorization":        f"token {github_pat}",
+        "Accept":               "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    })
 
-    num_tokens      = len(sessions)
-    per_token_calls = [0] * num_tokens  # track API calls per token
-    MAX_PER_TOKEN   = 4800              # hard stop per token (GitHub limit is 5000/hr)
+    api_calls = [0]              # mutable container so fetch_repo can increment it
+    MAX_API_CALLS = 4800         # hard stop — never exceed this (GitHub limit is 5000/hr)
 
-    def fetch_repo(name: str, session_idx: int) -> dict | None:
-        """Fetch a single repo, cycling through all tokens on rate limit."""
+    def fetch_repo(name: str) -> dict | None:
         url = f"https://api.github.com/repos/{name}"
-        tried_tokens = set()
-
-        for attempt in range(3 + num_tokens):
-            session = sessions[session_idx]
-            per_token_calls[session_idx] += 1
+        for attempt in range(5):
+            api_calls[0] += 1
             resp = session.get(url, timeout=30)
-
             if resp.status_code == 404:
                 return None
-
             if resp.status_code in (403, 429):
                 remaining = int(resp.headers.get("X-RateLimit-Remaining", 0))
                 if remaining > 0:
-                    # Secondary rate limit — short backoff
-                    wait = min(60, 10 * (attempt + 1))
-                    print(f"  [secondary_rate_limit] token{session_idx} {name} — sleeping {wait}s "
+                    # Secondary rate limit — short backoff is enough
+                    wait = min(120, 30 * (attempt + 1))
+                    print(f"  [secondary_rate_limit] {name} — sleeping {wait}s "
                           f"(remaining={remaining})")
-                    time.sleep(wait)
-                    continue
                 else:
-                    # Primary rate limit exhausted — cycle to next token
-                    tried_tokens.add(session_idx)
-                    next_idx = (session_idx + 1) % num_tokens
-                    if next_idx not in tried_tokens:
-                        print(f"  [rate_limit] token{session_idx} exhausted for {name} "
-                              f"— switching to token{next_idx}")
-                        session_idx = next_idx
-                        continue
-                    # All tokens exhausted — wait for earliest reset
+                    # Primary rate limit exhausted — wait for reset
                     reset = int(resp.headers.get("X-RateLimit-Reset",
                                                   time.time() + 60))
                     wait = max(5, reset - time.time()) + 5
-                    print(f"  [rate_limit] all {num_tokens} tokens exhausted for {name} "
-                          f"— sleeping {wait:.0f}s")
-                    time.sleep(wait)
-                    tried_tokens.clear()   # reset so we retry all tokens after waiting
-                    continue
-
+                    print(f"  [rate_limit] {name} — sleeping {wait:.0f}s")
+                time.sleep(wait)
+                continue
             if resp.status_code >= 500:
                 time.sleep((2 ** attempt) * 5)
                 continue
-
             resp.raise_for_status()
             d = resp.json()
             return {
@@ -219,7 +189,7 @@ if to_fetch:
     results = []
     errors  = 0
     START_TIME   = time.time()
-    MAX_RUNTIME  = 26100         # 435 min — leave 45 min for contributors + Delta writes (workflow timeout is 8hrs)
+    MAX_RUNTIME  = 6300          # 105 min — leave 15 min for contributors + Delta writes (workflow timeout is 2hrs)
     MIN_REMAINING = 100          # stop if API quota drops below this
 
     for i, row in enumerate(to_fetch):
@@ -231,44 +201,40 @@ if to_fetch:
                   f"{i} repos — saving partial results")
             break
 
-        # Guard 2: API call count — stop if ANY token is near its limit
-        if any(c >= MAX_PER_TOKEN for c in per_token_calls):
-            print(f"\n[api_ingest] API call limit ({MAX_PER_TOKEN}/token) reached "
-                  f"(calls={per_token_calls}) after {i} repos — saving partial results")
+        # Guard 2: API call count
+        if api_calls[0] >= MAX_API_CALLS:
+            print(f"\n[api_ingest] API call limit ({MAX_API_CALLS}) reached after "
+                  f"{i} repos — saving partial results")
             break
 
-        # Round-robin: alternate tokens each request
-        token_idx = i % num_tokens
-
         try:
-            data = fetch_repo(row["repo_name"], token_idx)
+            data = fetch_repo(row["repo_name"])
             if data:
                 results.append(data)
         except Exception as e:
             print(f"  [error] {row['repo_name']}: {e}")
             errors += 1
 
-        if (i + 1) % 200 == 0:
-            # Check quota on all tokens
-            token_remaining = []
-            for tidx, sess in enumerate(sessions):
-                per_token_calls[tidx] += 1   # count the rate_limit check call
-                try:
-                    quota = sess.get("https://api.github.com/rate_limit",
-                                     timeout=10).json().get("rate", {})
-                    token_remaining.append(quota.get("remaining", "?"))
-                except Exception:
-                    token_remaining.append("?")
+        # Throttle: ~1 request/sec to avoid GitHub secondary rate limits
+        time.sleep(0.8)
+
+        if (i + 1) % 100 == 0:
+            api_calls[0] += 1    # count the rate_limit check call too
+            try:
+                quota = session.get("https://api.github.com/rate_limit",
+                                    timeout=10).json().get("rate", {})
+                remaining = quota.get("remaining", "?")
+            except Exception:
+                remaining = "?"
             print(f"  [{i+1}/{len(to_fetch)}] fetched={len(results)} "
-                  f"errors={errors}  calls_per_token={per_token_calls}  "
-                  f"api_remaining={token_remaining}  elapsed={int(elapsed)}s")
-            # Guard 3: stop if ALL tokens' server-reported quota is low
-            low_tokens = [tidx for tidx, rem in enumerate(token_remaining)
-                          if isinstance(rem, int) and rem < MIN_REMAINING]
-            if len(low_tokens) == num_tokens:
-                print(f"\n[api_ingest] All {num_tokens} tokens quota low "
-                      f"({token_remaining}) — saving partial results")
+                  f"errors={errors}  api_calls={api_calls[0]}  "
+                  f"api_remaining={remaining}  elapsed={int(elapsed)}s")
+            # Guard 3: server-reported quota low
+            if isinstance(remaining, int) and remaining < MIN_REMAINING:
+                print(f"\n[api_ingest] API quota low ({remaining} remaining) "
+                      f"— saving partial results")
                 break
+            time.sleep(2)
 
     print(f"\n[api_ingest] API fetch complete: {len(results)} enriched  "
           f"{errors} errors")

@@ -138,6 +138,7 @@ features_df = features_df.withColumn(
 # ML PIPELINE
 # ================================================================
 features_df = features_df.fillna(0, subset=NUMERICAL_COLS)
+features_df = features_df.fillna(False, subset=BINARY_COLS)
 
 imputer   = Imputer(inputCols=NUMERICAL_COLS, outputCols=IMPUTED_COLS,
                     strategy="median")

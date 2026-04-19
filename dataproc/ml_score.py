@@ -101,6 +101,7 @@ repo_meta = (
     .filter(F.col("repo_created_date").isNotNull())
 )
 
+from ml_features import BINARY_COLS
 score_features = (
     build_features(
         spark, GOLD,
@@ -108,6 +109,7 @@ score_features = (
         trajectory_boundary=TRAJECTORY_BOUNDARY,
     )
     .filter(F.col("repo_age_days").isNotNull())
+    .fillna(False, subset=BINARY_COLS)
 )
 
 total_repos = score_features.count()
