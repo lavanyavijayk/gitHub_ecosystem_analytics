@@ -620,7 +620,7 @@ Cloud Workflows: batch_pipeline
     ├── [3] Create Dataproc cluster
     │       └── Poll every 60s, max 15 polls (15-min timeout)
     │
-    ├── [4] For each file (sequential):
+    ├── [4] For each file:
     │       └── silver_layer.py --triggered_file <path> --run_mode incremental
     │
     ├── [5] github_api_ingestion.py --top_pct 40
