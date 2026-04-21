@@ -34,6 +34,7 @@ DATES = [
     "2023-03-15",  # Wednesday - pre-AI boom
     "2024-04-10",  # Wednesday - AI boom in full swing
     "2025-03-12",  # Wednesday - most recent data
+    "2026-04-15", # wednesday
 ]
 
 # Peak global developer activity hours (UTC)

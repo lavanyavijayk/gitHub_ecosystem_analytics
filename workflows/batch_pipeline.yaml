@@ -65,6 +65,11 @@ main:
                   - file_paths: $${list.concat(file_paths, ["gs://" + msg.message.attributes.bucketId + "/" + msg.message.attributes.objectId])}
                   - ack_ids:    $${list.concat(ack_ids,    [msg.ackId])}
 
+    # ── Extract year from first file name (first 4 chars of objectId) ──
+    - extract_year:
+        assign:
+          - batch_year: $${text.substring(received[0].message.attributes.objectId, 0, 4)}
+
     # ── Ack messages before cluster creation ─────────────────
     # (avoids ack deadline expiry during long pipeline runs)
     - ack_messages:
@@ -93,34 +98,30 @@ main:
                   scripts_bucket: $${scripts_bucket}
                   dataproc_sa:    $${dataproc_sa}
 
-            # silver_layer.py — process files with concurrency limit of 2
-            # (matches the 2-worker cluster to avoid memory pressure)
+            # silver_layer.py — process files sequentially to avoid Delta write conflicts
             - process_files:
-                parallel:
-                  shared: [project_id, region, cluster_name, scripts_bucket, prefix]
-                  concurrency_limit: 2
-                  for:
-                    value: file_path
-                    in: $${file_paths}
-                    steps:
-                      - run_silver:
-                          call: submit_pyspark_job
-                          args:
-                            project_id:     $${project_id}
-                            region:         $${region}
-                            cluster_name:   $${cluster_name}
-                            scripts_bucket: $${scripts_bucket}
-                            script:         silver_layer.py
-                            job_args:
-                              - "--triggered_file"
-                              - $${file_path}
-                              - "--run_mode"
-                              - incremental
-                              - "--prefix"
-                              - $${prefix}
-                              - "--project_id"
-                              - $${project_id}
-                          result: silver_result
+                for:
+                  value: file_path
+                  in: $${file_paths}
+                  steps:
+                    - run_silver:
+                        call: submit_pyspark_job
+                        args:
+                          project_id:     $${project_id}
+                          region:         $${region}
+                          cluster_name:   $${cluster_name}
+                          scripts_bucket: $${scripts_bucket}
+                          script:         silver_layer.py
+                          job_args:
+                            - "--triggered_file"
+                            - $${file_path}
+                            - "--run_mode"
+                            - incremental
+                            - "--prefix"
+                            - $${prefix}
+                            - "--project_id"
+                            - $${project_id}
+                        result: silver_result
 
             # enrich top repos via GitHub API (builds repositories + contributors silver tables)
             - run_api:
@@ -138,8 +139,10 @@ main:
                     - $${prefix}
                     - "--project_id"
                     - $${project_id}
-                    - "--top_n"
-                    - "2000"
+                    - "--top_pct"
+                    - "40"
+                    - "--year"
+                    - $${batch_year}
                 result: api_result
 
             # gold and ml_score run once after all silver jobs complete
@@ -246,6 +249,7 @@ create_dataproc_cluster:
                   spark:spark.sql.catalog.spark_catalog: org.apache.spark.sql.delta.catalog.DeltaCatalog
               lifecycleConfig:
                 idleDeleteTtl: 1800s
+                autoDeleteTtl: 86400s
               gceClusterConfig:
                 zoneUri: us-central1-a
                 serviceAccount: $${dataproc_sa}
@@ -294,7 +298,7 @@ submit_pyspark_job:
     - init_job_poll:
         assign:
           - job_poll_count: 0
-          - max_job_polls: 120
+          - max_job_polls: 960
 
     - submit:
         call: http.post

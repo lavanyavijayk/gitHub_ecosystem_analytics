@@ -21,7 +21,7 @@ from google.cloud import storage
 
 # Files are uploaded to:  gs://{bucket}/gharchive/{YYYY}/{filename}.json.gz
 # This matches the path expected by silver_layer.py (full refresh lists gharchive/**)
-DATA_DIR = Path(__file__).parent.parent / "data" / "gharchive_filtered" / "2019"
+DATA_DIR = Path(__file__).parent.parent / "data" / "gharchive_filtered" / "2026"
 
 
 def upload_folder(client: storage.Client,

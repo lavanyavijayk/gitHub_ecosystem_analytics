@@ -29,6 +29,24 @@ variable "github_pat" {
   sensitive   = true
 }
 
+variable "github_pat_2" {
+  description = "Second GitHub PAT (different account) for round-robin API calls."
+  type        = string
+  sensitive   = true
+}
+
+variable "github_pat_3" {
+  description = "Third GitHub PAT (different account) for round-robin API calls."
+  type        = string
+  sensitive   = true
+}
+
+variable "github_pat_4" {
+  description = "Fourth GitHub PAT (different account) for round-robin API calls."
+  type        = string
+  sensitive   = true
+}
+
 variable "bq_dataset" {
   description = "BigQuery dataset name for gold layer tables."
   type        = string

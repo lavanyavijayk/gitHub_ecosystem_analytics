@@ -221,7 +221,7 @@ submit_pyspark_job:
     - init_job_poll:
         assign:
           - job_poll_count: 0
-          - max_job_polls: 120
+          - max_job_polls: 720
 
     - submit:
         call: http.post

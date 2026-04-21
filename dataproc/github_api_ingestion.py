@@ -10,6 +10,7 @@
 #   --prefix      GCS bucket prefix
 #   --project_id  GCP project ID
 #   --top_pct     percentage of top repos to fetch (default 40, capped at 4000)
+#   --year        only consider events from this year when ranking repos
 # ================================================================
 
 import argparse
@@ -31,12 +32,15 @@ parser.add_argument("--run_mode",   default="incremental")
 parser.add_argument("--prefix",     required=True)
 parser.add_argument("--project_id", required=True)
 parser.add_argument("--top_pct",    type=int, default=40)
+parser.add_argument("--year",       type=int, required=True,
+                    help="Only consider events from this year when ranking repos")
 args = parser.parse_args()
 
 run_mode   = args.run_mode
 prefix     = args.prefix
 project_id = args.project_id
 TOP_PCT    = args.top_pct
+YEAR       = args.year
 
 SILVER = f"gs://{prefix}-silver"
 
@@ -54,6 +58,7 @@ spark.sparkContext.setLogLevel("WARN")
 print(f"[api_ingest] run_mode   = {run_mode}")
 print(f"[api_ingest] project_id = {project_id}")
 print(f"[api_ingest] top_pct    = {TOP_PCT}%")
+print(f"[api_ingest] year       = {YEAR}")
 
 # ── GitHub PATs from Secret Manager (round-robin for throughput) ──
 sm_client = secretmanager.SecretManagerServiceClient()
@@ -78,33 +83,32 @@ SILVER_TABLES = [
 ]
 
 event_counts = None
+repo_names   = None
+
 for tbl in SILVER_TABLES:
     path = f"{SILVER}/{tbl}"
     if not DeltaTable.isDeltaTable(spark, path):
         continue
-    counts = (spark.read.format("delta").load(path)
-                   .groupBy("repo_id")
-                   .agg(F.count("event_id").alias("n")))
+    df = (spark.read.format("delta").load(path)
+               .filter(F.col("year") == YEAR))
+
+    # event counts
+    counts = df.groupBy("repo_id").agg(F.count("event_id").alias("n"))
     event_counts = counts if event_counts is None else (
         event_counts.union(counts).groupBy("repo_id").agg(F.sum("n").alias("n"))
     )
 
-if event_counts is None:
-    print("[api_ingest] No silver event tables found — exiting.")
-    sys.exit(0)
-
-repo_names = None
-for tbl in SILVER_TABLES:
-    path = f"{SILVER}/{tbl}"
-    if not DeltaTable.isDeltaTable(spark, path):
-        continue
-    df = spark.read.format("delta").load(path)
+    # repo names
     if "repo_name" in df.columns:
         names = df.select("repo_id", "repo_name")
         repo_names = names if repo_names is None else repo_names.unionByName(names)
 
+if event_counts is None:
+    print(f"[api_ingest] No silver event tables with data for year {YEAR} — exiting.")
+    sys.exit(0)
+
 if repo_names is None:
-    print("[api_ingest] No repo_name column found in any silver table — exiting.")
+    print(f"[api_ingest] No repo_name column found for year {YEAR} — exiting.")
     sys.exit(0)
 
 repo_names = repo_names.dropDuplicates(["repo_id"])
@@ -169,11 +173,30 @@ if to_fetch:
             if resp.status_code in (403, 429):
                 remaining = int(resp.headers.get("X-RateLimit-Remaining", 0))
                 if remaining > 0:
-                    # Secondary rate limit — short backoff
+                    # Secondary rate limit (per-IP, shared across tokens)
+                    # Use retry-after header if provided, otherwise backoff
+                    retry_after = int(resp.headers.get("Retry-After", 0))
+                    if retry_after > 0:
+                        print(f"  [secondary_rate_limit] token{session_idx} {name} "
+                              f"— retry-after {retry_after}s (remaining={remaining})")
+                        time.sleep(retry_after)
+                        tried_tokens.clear()
+                        continue
+                    # No retry-after — try rotating token, then backoff
+                    tried_tokens.add(session_idx)
+                    next_idx = (session_idx + 1) % num_tokens
+                    if next_idx not in tried_tokens:
+                        print(f"  [secondary_rate_limit] token{session_idx} {name} "
+                              f"— switching to token{next_idx}")
+                        session_idx = next_idx
+                        time.sleep(2)
+                        continue
+                    # All tokens hit secondary limit — backoff
                     wait = min(60, 10 * (attempt + 1))
-                    print(f"  [secondary_rate_limit] token{session_idx} {name} — sleeping {wait}s "
+                    print(f"  [secondary_rate_limit] all tokens {name} — sleeping {wait}s "
                           f"(remaining={remaining})")
                     time.sleep(wait)
+                    tried_tokens.clear()
                     continue
                 else:
                     # Primary rate limit exhausted — cycle to next token

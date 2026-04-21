@@ -5,14 +5,14 @@
 -- Run in BigQuery console or via:
 --   bq query --use_legacy_sql=false < scripts/create_bq_views.sql
 --
--- Replace PROJECT_ID below with your actual GCP project ID.
+-- Replace damg-7370-492706 below with your actual GCP project ID.
 -- Dataset: github_oss_gold (must exist — created by terraform apply)
 -- ================================================================
 
 -- ----------------------------------------------------------------
 -- Dashboard 1: Programming Language Evolution
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_language_evolution` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_language_evolution` AS
 SELECT
     l.language_name,
     f.year,
@@ -22,15 +22,15 @@ SELECT
     f.unique_contributors,
     f.market_share_pct,
     f.yoy_push_growth_pct
-FROM `PROJECT_ID.github_oss_gold.fact_language_yearly`  f
-JOIN `PROJECT_ID.github_oss_gold.dim_language`          l ON f.language_key = l.language_key
+FROM `damg-7370-492706.github_oss_gold.fact_language_yearly`  f
+JOIN `damg-7370-492706.github_oss_gold.dim_language`          l ON f.language_key = l.language_key
 WHERE l.language_name != 'Unknown'
-  AND f.year BETWEEN 2016 AND 2025;
+  AND f.year BETWEEN 2016 AND 2026;
 
 -- ----------------------------------------------------------------
 -- Dashboard 2: AI/ML Boom Effect
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_ai_boom` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_ai_boom` AS
 SELECT
     d.year,
     r.is_ai_ml_repo,
@@ -43,15 +43,15 @@ SELECT
         100.0 * SUM(f.total_pushes) /
         SUM(SUM(f.total_pushes)) OVER (PARTITION BY d.year), 2
     ) AS ai_activity_share_pct
-FROM `PROJECT_ID.github_oss_gold.fact_repo_activity_daily` f
-JOIN `PROJECT_ID.github_oss_gold.dim_date`                 d ON f.date_key = d.date_key
-JOIN `PROJECT_ID.github_oss_gold.dim_repository`           r ON f.repo_key  = r.repo_key
+FROM `damg-7370-492706.github_oss_gold.fact_repo_activity_daily` f
+JOIN `damg-7370-492706.github_oss_gold.dim_date`                 d ON f.date_key = d.date_key
+JOIN `damg-7370-492706.github_oss_gold.dim_repository`           r ON f.repo_key  = r.repo_key
 GROUP BY d.year, r.is_ai_ml_repo;
 
 -- ----------------------------------------------------------------
 -- Dashboard 3: COVID-19 Impact on Developer Activity
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_covid_impact` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_covid_impact` AS
 SELECT
     d.year,
     d.hour,
@@ -61,15 +61,15 @@ SELECT
     SUM(f.total_prs_opened)    AS total_prs,
     SUM(f.total_issues_opened) AS total_issues,
     COUNT(DISTINCT f.repo_key) AS unique_repos
-FROM `PROJECT_ID.github_oss_gold.fact_repo_activity_daily` f
-JOIN `PROJECT_ID.github_oss_gold.dim_date`                 d ON f.date_key = d.date_key
+FROM `damg-7370-492706.github_oss_gold.fact_repo_activity_daily` f
+JOIN `damg-7370-492706.github_oss_gold.dim_date`                 d ON f.date_key = d.date_key
 WHERE d.year IN (2019, 2020, 2021)
 GROUP BY d.year, d.hour, d.is_covid_period, d.is_weekend;
 
 -- ----------------------------------------------------------------
 -- Dashboard 4: Repository Health Scorecard
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_repo_health` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_repo_health` AS
 WITH metrics AS (
     SELECT
         f.repo_key,
@@ -81,7 +81,7 @@ WITH metrics AS (
             SUM(f.total_prs_merged),
             SUM(f.total_prs_opened)
         ) AS merge_rate
-    FROM `PROJECT_ID.github_oss_gold.fact_repo_activity_daily` f
+    FROM `damg-7370-492706.github_oss_gold.fact_repo_activity_daily` f
     GROUP BY f.repo_key
 )
 SELECT
@@ -100,12 +100,12 @@ SELECT
         25 * LEAST(1, LOG(1 + m.total_stars + m.total_forks) / 15.0)
     )), 2) AS health_score
 FROM metrics m
-JOIN `PROJECT_ID.github_oss_gold.dim_repository` r ON m.repo_key = r.repo_key;
+JOIN `damg-7370-492706.github_oss_gold.dim_repository` r ON m.repo_key = r.repo_key;
 
 -- ----------------------------------------------------------------
 -- Dashboard 5: Pull Request Lifecycle
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_pr_lifecycle` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_pr_lifecycle` AS
 SELECT
     d.year,
     l.language_name,
@@ -117,16 +117,16 @@ SELECT
     ROUND(AVG(f.time_to_merge_hours), 1)                       AS avg_merge_hrs,
     ROUND(AVG(CAST(f.review_comments AS FLOAT64)), 2)          AS avg_review_comments,
     ROUND(AVG(CAST(f.additions + f.deletions AS FLOAT64)), 0)  AS avg_lines_changed
-FROM `PROJECT_ID.github_oss_gold.fact_pr_events`  f
-JOIN `PROJECT_ID.github_oss_gold.dim_date`         d ON f.date_key     = d.date_key
-JOIN `PROJECT_ID.github_oss_gold.dim_language`     l ON f.language_key = l.language_key
+FROM `damg-7370-492706.github_oss_gold.fact_pr_events`  f
+JOIN `damg-7370-492706.github_oss_gold.dim_date`         d ON f.date_key     = d.date_key
+JOIN `damg-7370-492706.github_oss_gold.dim_language`     l ON f.language_key = l.language_key
 WHERE f.action = 'closed'
 GROUP BY d.year, l.language_name, f.pr_size_bucket;
 
 -- ----------------------------------------------------------------
 -- Dashboard 6: Bus Factor / Contributor Concentration
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_bus_factor` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_bus_factor` AS
 WITH ranked AS (
     SELECT
         fp.repo_key,
@@ -135,7 +135,7 @@ WITH ranked AS (
         RANK() OVER (PARTITION BY fp.repo_key
                      ORDER BY COUNT(fp.event_id) DESC)         AS rnk,
         SUM(COUNT(fp.event_id)) OVER (PARTITION BY fp.repo_key) AS repo_total
-    FROM `PROJECT_ID.github_oss_gold.fact_push_events` fp
+    FROM `damg-7370-492706.github_oss_gold.fact_push_events` fp
     GROUP BY fp.repo_key, fp.contributor_key
 )
 SELECT
@@ -152,14 +152,14 @@ SELECT
         THEN rk.push_count ELSE 0 END)
         / NULLIF(MAX(rk.repo_total), 0), 2)                    AS top5_pct
 FROM ranked rk
-JOIN `PROJECT_ID.github_oss_gold.dim_repository` r ON rk.repo_key = r.repo_key
+JOIN `damg-7370-492706.github_oss_gold.dim_repository` r ON rk.repo_key = r.repo_key
 GROUP BY r.repo_name, r.language
 HAVING COUNT(DISTINCT rk.contributor_key) >= 3;
 
 -- ----------------------------------------------------------------
 -- Dashboard 7: GitHub Ecosystem Growth YOY
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_ecosystem_growth` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_ecosystem_growth` AS
 SELECT
     d.year,
     COUNT(DISTINCT f.repo_key)              AS unique_repos,
@@ -173,14 +173,14 @@ SELECT
         SUM(f.total_prs_opened),
         SUM(f.total_pushes)
     ), 4) AS pr_to_push_ratio
-FROM `PROJECT_ID.github_oss_gold.fact_repo_activity_daily` f
-JOIN `PROJECT_ID.github_oss_gold.dim_date`                 d ON f.date_key = d.date_key
+FROM `damg-7370-492706.github_oss_gold.fact_repo_activity_daily` f
+JOIN `damg-7370-492706.github_oss_gold.dim_date`                 d ON f.date_key = d.date_key
 GROUP BY d.year;
 
 -- ----------------------------------------------------------------
 -- Dashboard 8: Peak Activity Heatmap (hour x day-of-week)
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_hourly_heatmap` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_hourly_heatmap` AS
 SELECT
     d.year,
     d.hour,
@@ -189,15 +189,15 @@ SELECT
     SUM(f.total_pushes)        AS total_pushes,
     SUM(f.total_prs_opened)    AS total_prs,
     COUNT(DISTINCT f.repo_key) AS active_repos
-FROM `PROJECT_ID.github_oss_gold.fact_repo_activity_daily` f
-JOIN `PROJECT_ID.github_oss_gold.dim_date`                 d ON f.date_key = d.date_key
+FROM `damg-7370-492706.github_oss_gold.fact_repo_activity_daily` f
+JOIN `damg-7370-492706.github_oss_gold.dim_date`                 d ON f.date_key = d.date_key
 GROUP BY d.year, d.hour, d.day_of_week, d.day_name;
 
 -- ----------------------------------------------------------------
 -- Dashboard 9: ML Repo Success Predictions
 -- (source: ml_abandonment_risk written by ml_score.py on every run)
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_ml_predictions` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_ml_predictions` AS
 SELECT
     r.repo_name,
     r.language,
@@ -216,13 +216,13 @@ SELECT
         WHEN p.abandonment_probability >= 0.20 THEN 'Low Risk (20-40%)'
         ELSE 'Very Low Risk (<20%)'
     END AS confidence_tier
-FROM `PROJECT_ID.github_oss_gold.ml_abandonment_risk`  p
-JOIN `PROJECT_ID.github_oss_gold.dim_repository`       r ON p.repo_key = r.repo_key;
+FROM `damg-7370-492706.github_oss_gold.ml_abandonment_risk`  p
+JOIN `damg-7370-492706.github_oss_gold.dim_repository`       r ON p.repo_key = r.repo_key;
 
 -- ----------------------------------------------------------------
 -- Dashboard 10: ML Predictions by Language
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_ml_by_language` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_ml_by_language` AS
 SELECT
     r.language,
     COUNT(*)                                                          AS total_repos,
@@ -232,8 +232,8 @@ SELECT
     ROUND(AVG(p.abandonment_probability) * 100, 2)                   AS avg_abandonment_prob_pct,
     ROUND(100.0 * SUM(CASE WHEN p.risk_tier = 'High Risk' THEN 1 ELSE 0 END)
         / NULLIF(COUNT(*), 0), 1)                                    AS high_risk_pct
-FROM `PROJECT_ID.github_oss_gold.ml_abandonment_risk`  p
-JOIN `PROJECT_ID.github_oss_gold.dim_repository`       r ON p.repo_key = r.repo_key
+FROM `damg-7370-492706.github_oss_gold.ml_abandonment_risk`  p
+JOIN `damg-7370-492706.github_oss_gold.dim_repository`       r ON p.repo_key = r.repo_key
 WHERE r.language IS NOT NULL
 GROUP BY r.language
 HAVING COUNT(*) >= 10;
@@ -242,23 +242,23 @@ HAVING COUNT(*) >= 10;
 -- Dashboard 11: ML Feature Importance
 -- (source: ml_feature_importance written by ml_train.py monthly)
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_ml_feature_importance` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_ml_feature_importance` AS
 SELECT
     feature_name,
     importance,
     model_version,
     ROUND(100.0 * importance / SUM(importance) OVER (PARTITION BY model_version), 2) AS importance_pct,
     RANK() OVER (PARTITION BY model_version ORDER BY importance DESC)                 AS importance_rank
-FROM `PROJECT_ID.github_oss_gold.ml_feature_importance`;
+FROM `damg-7370-492706.github_oss_gold.ml_feature_importance`;
 
 -- ----------------------------------------------------------------
 -- Dashboard 12: Abandonment Risk — Current Snapshot
 -- (latest model version, one row per repo)
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_abandonment_risk_current` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_abandonment_risk_current` AS
 WITH latest_version AS (
     SELECT MAX(model_version) AS current_version
-    FROM `PROJECT_ID.github_oss_gold.ml_abandonment_risk`
+    FROM `damg-7370-492706.github_oss_gold.ml_abandonment_risk`
 )
 SELECT
     r.repo_name,
@@ -276,21 +276,21 @@ SELECT
     p.is_archived,
     p.model_version,
     p.scored_at
-FROM `PROJECT_ID.github_oss_gold.ml_abandonment_risk`  p
+FROM `damg-7370-492706.github_oss_gold.ml_abandonment_risk`  p
 JOIN latest_version lv                                  ON p.model_version = lv.current_version
-JOIN `PROJECT_ID.github_oss_gold.dim_repository`       r ON p.repo_key = r.repo_key;
+JOIN `damg-7370-492706.github_oss_gold.dim_repository`       r ON p.repo_key = r.repo_key;
 
 -- ----------------------------------------------------------------
 -- Dashboard 13: Abandonment Risk by Language (bar chart)
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_abandonment_by_language` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_abandonment_by_language` AS
 WITH latest_version AS (
     SELECT MAX(model_version) AS current_version
-    FROM `PROJECT_ID.github_oss_gold.ml_abandonment_risk`
+    FROM `damg-7370-492706.github_oss_gold.ml_abandonment_risk`
 ),
 current_scores AS (
     SELECT p.*
-    FROM `PROJECT_ID.github_oss_gold.ml_abandonment_risk` p
+    FROM `damg-7370-492706.github_oss_gold.ml_abandonment_risk` p
     JOIN latest_version lv ON p.model_version = lv.current_version
 )
 SELECT
@@ -303,14 +303,14 @@ SELECT
     ROUND(100.0 * SUM(CASE WHEN s.risk_tier = 'High Risk' THEN 1 ELSE 0 END)
         / NULLIF(COUNT(*), 0), 1)                                          AS high_risk_pct
 FROM current_scores                                                        s
-JOIN `PROJECT_ID.github_oss_gold.dim_repository`                           r ON s.repo_key = r.repo_key
+JOIN `damg-7370-492706.github_oss_gold.dim_repository`                           r ON s.repo_key = r.repo_key
 WHERE r.language IS NOT NULL
 GROUP BY r.language;
 
 -- ----------------------------------------------------------------
 -- Dashboard 14: Abandonment Risk Trend over Model Versions
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_abandonment_trend` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_abandonment_trend` AS
 SELECT
     model_version,
     risk_tier,
@@ -319,14 +319,14 @@ SELECT
     ROUND(
         100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY model_version), 1
     )                                                                           AS pct_of_scored_repos
-FROM `PROJECT_ID.github_oss_gold.ml_abandonment_risk`
+FROM `damg-7370-492706.github_oss_gold.ml_abandonment_risk`
 GROUP BY model_version, risk_tier;
 
 -- ----------------------------------------------------------------
 -- Dashboard 15: Repository Trajectory Clustering (K-Means)
 -- (source: ml_repo_trajectories written by ml_trajectory.py monthly)
 -- ----------------------------------------------------------------
-CREATE OR REPLACE VIEW `PROJECT_ID.github_oss_gold.analysis_repo_trajectories` AS
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_repo_trajectories` AS
 SELECT
     r.repo_name,
     r.language,
@@ -338,5 +338,81 @@ SELECT
     t.avg_commits_recent,
     t.years_observed,
     t.computed_at
-FROM `PROJECT_ID.github_oss_gold.ml_repo_trajectories` t
-JOIN `PROJECT_ID.github_oss_gold.dim_repository`       r ON t.repo_key = r.repo_key;
+FROM `damg-7370-492706.github_oss_gold.ml_repo_trajectories` t
+JOIN `damg-7370-492706.github_oss_gold.dim_repository`       r ON t.repo_key = r.repo_key;
+
+-- ----------------------------------------------------------------
+-- Dashboard 16: Language Market Share Forecast (2026-2027)
+-- ----------------------------------------------------------------
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_language_forecast` AS
+SELECT
+    f.language_name,
+    f.slope_pct_per_year,
+    f.r_squared,
+    f.forecast_2026_share,
+    f.forecast_2027_share,
+    f.trend_label,
+    f.computed_at,
+    l.paradigm,
+    l.type_system,
+    l.first_appeared
+FROM `damg-7370-492706.github_oss_gold.ml_language_trend_forecasts` f
+LEFT JOIN `damg-7370-492706.github_oss_gold.dim_language`           l ON f.language_key = l.language_key
+WHERE f.language_name IS NOT NULL;
+
+-- ----------------------------------------------------------------
+-- Dashboard 17: Contributor Dynamics (Growth, Retention, New vs Returning)
+-- ----------------------------------------------------------------
+CREATE OR REPLACE VIEW `damg-7370-492706.github_oss_gold.analysis_contributor_dynamics` AS
+WITH yearly_contributors AS (
+    SELECT
+        d.year,
+        fp.contributor_key,
+        COUNT(fp.event_id) AS push_count
+    FROM `damg-7370-492706.github_oss_gold.fact_push_events`  fp
+    JOIN `damg-7370-492706.github_oss_gold.dim_date`          d  ON fp.date_key = d.date_key
+    GROUP BY d.year, fp.contributor_key
+),
+first_year AS (
+    SELECT
+        contributor_key,
+        MIN(year) AS first_active_year
+    FROM yearly_contributors
+    GROUP BY contributor_key
+),
+classified AS (
+    SELECT
+        yc.year,
+        yc.contributor_key,
+        yc.push_count,
+        fy.first_active_year,
+        CASE WHEN yc.year = fy.first_active_year THEN 'New' ELSE 'Returning' END AS contributor_type
+    FROM yearly_contributors yc
+    JOIN first_year fy ON yc.contributor_key = fy.contributor_key
+),
+retention AS (
+    SELECT
+        a.year AS current_year,
+        COUNT(DISTINCT a.contributor_key) AS active_this_year,
+        COUNT(DISTINCT b.contributor_key) AS retained_from_prior,
+        ROUND(100.0 * COUNT(DISTINCT b.contributor_key)
+            / NULLIF(COUNT(DISTINCT a.contributor_key), 0), 2) AS retention_rate_pct
+    FROM yearly_contributors a
+    LEFT JOIN yearly_contributors b
+        ON a.contributor_key = b.contributor_key AND b.year = a.year - 1
+    GROUP BY a.year
+)
+SELECT
+    c.year,
+    COUNT(DISTINCT c.contributor_key)                                           AS total_contributors,
+    COUNT(DISTINCT CASE WHEN c.contributor_type = 'New'       THEN c.contributor_key END) AS new_contributors,
+    COUNT(DISTINCT CASE WHEN c.contributor_type = 'Returning' THEN c.contributor_key END) AS returning_contributors,
+    ROUND(100.0 * COUNT(DISTINCT CASE WHEN c.contributor_type = 'New' THEN c.contributor_key END)
+        / NULLIF(COUNT(DISTINCT c.contributor_key), 0), 2)                     AS new_contributor_pct,
+    r.retained_from_prior,
+    r.retention_rate_pct,
+    SUM(c.push_count)                                                           AS total_pushes
+FROM classified c
+JOIN retention r ON c.year = r.current_year
+GROUP BY c.year, r.retained_from_prior, r.retention_rate_pct
+ORDER BY c.year;
