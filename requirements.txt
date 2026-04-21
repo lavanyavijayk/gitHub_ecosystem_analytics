@@ -1,0 +1,22 @@
+# ================================================================
+# requirements.txt — Local script dependencies
+#
+# Install:  pip install -r requirements.txt
+#
+# NOTE: Dataproc cluster dependencies (pyspark, delta-spark,
+#       google-cloud-secret-manager, scikit-learn, pandas) are
+#       installed at cluster creation time via dataproc/init_cluster.sh
+#       and are pre-installed on Dataproc 2.1 image. They are NOT
+#       needed locally unless you want to run PySpark jobs outside
+#       the cluster.
+# ================================================================
+
+# --- Data ingestion (fetch_data.py) ---
+requests>=2.31,<3
+
+# --- GCS upload (scripts/upload_to_gcs.py) ---
+google-cloud-storage>=2.14,<3
+
+# --- Infrastructure (terraform) ---
+# Terraform CLI >= 1.6 (installed separately, not a Python package)
+# Google Cloud CLI (gcloud) installed separately
