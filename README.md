@@ -1,6 +1,6 @@
 # GitHub OSS Ecosystem Analytics
 
-**DAMG 7370 Final Project** — End-to-end GCP data pipeline analyzing 10 years (2016--2025) of GitHub open-source activity to uncover language trends, the AI/ML boom, COVID-19 impacts, and repository health patterns.
+**DAMG 7370 Final Project** — End-to-end GCP data pipeline analyzing 10 years (2016--2026) of GitHub open-source activity to uncover language trends, the AI/ML boom, COVID-19 impacts, and repository health patterns.
 
 ---
 
@@ -13,7 +13,7 @@ This project ingests GitHub Archive event data and GitHub REST API metadata, tra
 | # | Objective | Data Source |
 |---|-----------|-------------|
 | 1 | Programming Language Adoption Over a Decade | `analysis_language_evolution` |
-| 2 | The AI/ML Boom Effect (2022--2025) | `analysis_ai_boom` |
+| 2 | The AI/ML Boom Effect (2022--2026) | `analysis_ai_boom` |
 | 3 | COVID-19 Impact on Developer Activity | `analysis_covid_impact` |
 | 4 | Repository Health Scorecard | `analysis_repo_health` |
 | 5 | Contributor Dynamics (New vs. Returning) | `analysis_contributor_dynamics` |
@@ -87,7 +87,7 @@ This project ingests GitHub Archive event data and GitHub REST API metadata, tra
 ### Data Sources
 
 - **GitHub Archive** — 66 `.json.gz` files covering 6 peak hours/day (14:00--19:00 UTC), 1 mid-week day per year, 2016--2026
-- **GitHub REST API** — metadata for the top 2,000 repositories (language, license, stars, forks, README, CI)
+- **GitHub REST API** — metadata for the top 4,000 repositories (language, license, stars, forks, README, CI)
 
 ### Event Types
 
@@ -121,7 +121,7 @@ Data ingestion runs locally (one-time) before the cloud pipeline takes over.
 fetch_data.py                          upload_to_gcs.py
     │                                       │
     │  1. Select 1 mid-week day/year        │  4. Upload .gz files to
-    │     (2016-2025, no holidays)           │     gs://{prefix}-raw/gharchive/{YYYY}/
+    │     (2016-2026, no holidays)           │     gs://{prefix}-raw/gharchive/{YYYY}/
     │                                       │
     │  2. Download 6 peak hours/day         │  5. GCS fires OBJECT_FINALIZE event
     │     (14:00-19:00 UTC) from            │     → Pub/Sub topic receives message
@@ -460,7 +460,7 @@ fact_pr_events    ───┘    • early_commits, early_pushes       (languag
 ```
 fact_repo_activity_daily
     │
-    │  Pivot: yearly commit counts (2016-2025) per repo
+    │  Pivot: yearly commit counts (2016-2026) per repo
     │  Filter: repos with >= 2 years of data
     │
     ▼
@@ -494,7 +494,7 @@ fact_language_yearly + dim_language
     │  Filter: languages with >= 3 years of data
     │
     │  Per-language scikit-learn LinearRegression:
-    │    X = year (2016-2025)
+    │    X = year (2016-2026)
     │    y = market_share_pct
     │
     ▼
@@ -520,7 +520,7 @@ fact_language_yearly + dim_language
 
 | View | Purpose | Key Logic |
 |---|---|---|
-| `analysis_language_evolution` | Language market share trends | Joins `fact_language_yearly` + `dim_language`, filters 2016--2025 |
+| `analysis_language_evolution` | Language market share trends | Joins `fact_language_yearly` + `dim_language`, filters 2016--2026 |
 | `analysis_ai_boom` | AI/ML activity share | Groups by `is_ai_ml_repo`, computes `ai_activity_share_pct` per year |
 | `analysis_covid_impact` | COVID-era developer patterns | Filters 2019--2021, groups by hour + weekend flag |
 | `analysis_repo_health` | Repo quality scorecard | Composite score: 25% PR merge speed + 25% issue close speed + 25% merge rate + 25% community (log-scaled stars+forks) |
@@ -592,7 +592,6 @@ Additional quality measures:
 ```
 gitHub_ecosystem_analytics/
 ├── fetch_data.py                          # Download & filter GH Archive files
-├── LOOKER_STUDIO_GUIDE.md                 # Dashboard setup guide (fields, visuals, metrics)
 │
 ├── dataproc/                              # PySpark jobs (run on Dataproc)
 │   ├── silver_layer.py                    # Raw → Silver (clean, validate, partition)
@@ -610,7 +609,6 @@ gitHub_ecosystem_analytics/
 │   ├── github_api_enrichment.py           # Local GitHub API enrichment (top 2K repos)
 │   ├── create_bq_views.sql                # 8 BigQuery analysis views for Looker Studio
 │   ├── apply_bq_views.sh                  # Deploy views to BigQuery
-│   ├── run_from_api.sh                    # Manual pipeline execution
 │   └── run_from_api_parallel.sh           # Parallel API enrichment runner
 │
 ├── workflows/                             # Cloud Workflows definitions
@@ -745,15 +743,13 @@ Both pipelines create ephemeral Dataproc clusters and delete them after completi
 | Page | Dashboard | Key Metrics |
 |------|-----------|-------------|
 | 1 | Programming Language Adoption | Market share %, total commits, YoY growth |
-| 2 | AI/ML Boom (2022--2025) | AI activity share %, stars & forks growth |
+| 2 | AI/ML Boom (2022--2026) | AI activity share %, stars & forks growth |
 | 3 | COVID-19 Impact | Hourly push patterns, weekend vs. weekday activity |
 | 4 | Repository Health Scorecard | Health score (0--100), PR merge time, issue close time |
 | 5 | Contributor Dynamics | New vs. returning contributors, retention rate |
 | 6 | Abandonment Risk (ML) | Risk probability, feature importance breakdown |
 | 7 | Language Forecast | 2026--2027 market share predictions, trend labels |
 | 8 | Repo Growth Trajectories | Cluster labels: Viral, Established, Stable, Declining, Dormant |
-
-See [`LOOKER_STUDIO_GUIDE.md`](LOOKER_STUDIO_GUIDE.md) for complete setup instructions with field-level detail for every chart.
 
 ---
 
